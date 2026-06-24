@@ -1,0 +1,59 @@
+import streamlit as st
+import pandas as pd
+from src.data_fetcher import fetch_stock_data
+from src.models.scoring import add_scores
+from src.models.risk import portfolio_risk_summary
+from src.utils.formatting import money, pct
+
+st.set_page_config(page_title="Luc Investment Terminal Pro", page_icon="📈", layout="wide")
+
+st.title("📈 Luc Investment Terminal Pro")
+st.caption("Professional long-term investment dashboard: portfolio, scoring, valuation, risk, alerts, and reports.")
+
+portfolio = pd.read_csv("src/data/portfolio.csv")
+
+with st.sidebar:
+    st.header("Portfolio Settings")
+    portfolio_value = st.number_input("Portfolio value ($)", min_value=0.0, value=2500.0, step=100.0)
+    st.caption("Edit `src/data/portfolio.csv` in GitHub to permanently change holdings.")
+    if st.button("Refresh data"):
+        st.cache_data.clear()
+
+with st.spinner("Loading live market data..."):
+    data = fetch_stock_data(portfolio["Ticker"].tolist())
+
+df = portfolio.merge(data, on="Ticker", how="left", suffixes=("", "_Live"))
+df["Company"] = df["Company"].fillna(df.get("Company_Live"))
+df = add_scores(df)
+df["Dollar Allocation"] = portfolio_value * df["Weight"] / 100
+df["Net Debt"] = df["Total Debt"] - df["Cash"]
+
+summary = portfolio_risk_summary(df)
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Portfolio Value", f"${portfolio_value:,.0f}")
+c2.metric("Holdings", len(df))
+c3.metric("Total Weight", f"{summary['Total Weight']:.1f}%")
+c4.metric("Weighted Score", f"{summary['Weighted Score']:.1f}/100")
+c5.metric("AI Exposure", f"{summary['AI Exposure Weighted %']:.1f}%")
+
+st.subheader("Portfolio Overview")
+st.dataframe(
+    df[[
+        "Ticker", "Company", "Weight", "Dollar Allocation", "Price", "1Y Return",
+        "Revenue Growth", "Forward P/E", "PEG", "Free Cash Flow", "Net Debt",
+        "Total Score /100", "Investment Rating"
+    ]],
+    use_container_width=True,
+    hide_index=True
+)
+
+st.subheader("Top Strengths")
+strengths = df.sort_values("Total Score /100", ascending=False).head(5)
+st.dataframe(strengths[["Ticker", "Company", "Total Score /100", "Investment Rating"]], use_container_width=True, hide_index=True)
+
+st.subheader("Key Risks")
+risks = df.sort_values(["Debt Score /10", "Valuation Score /15"], ascending=True).head(5)
+st.dataframe(risks[["Ticker", "Company", "Debt Score /10", "Valuation Score /15", "Free Cash Flow"]], use_container_width=True, hide_index=True)
+
+st.info("Use the left sidebar pages for Scorecard, Valuation, Macro Risk, Alerts, and PDF Reports.")

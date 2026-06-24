@@ -1,4 +1,19 @@
-streamlit
-pandas
-yfinance
-numpy
+def money(x):
+    if x is None: return "N/A"
+    try:
+        x = float(x)
+        sign = "-" if x < 0 else ""
+        x = abs(x)
+        if x >= 1e12: return f"{sign}${x/1e12:.2f}T"
+        if x >= 1e9: return f"{sign}${x/1e9:.2f}B"
+        if x >= 1e6: return f"{sign}${x/1e6:.2f}M"
+        return f"{sign}${x:,.0f}"
+    except Exception:
+        return "N/A"
+
+def pct(x):
+    if x is None: return "N/A"
+    try:
+        return f"{float(x)*100:.1f}%"
+    except Exception:
+        return "N/A"

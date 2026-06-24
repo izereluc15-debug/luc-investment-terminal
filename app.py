@@ -1,32 +1,32 @@
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from pathlib import Path
 import pandas as pd
+import math
 
-def create_pdf_report(df, output_path="investment_report.pdf"):
-    output_path = Path(output_path)
-    doc = SimpleDocTemplate(str(output_path), pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
-    story.append(Paragraph("Luc Investment Terminal - Portfolio Report", styles["Title"]))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph("Educational report generated from your Streamlit dashboard.", styles["BodyText"]))
-    story.append(Spacer(1, 12))
+def simple_dcf_value(fcf, growth_rate=0.12, discount_rate=0.10, terminal_growth=0.03, years=10, shares_outstanding=None):
+    if fcf is None or pd.isna(fcf) or fcf <= 0:
+        return None
+    cashflows = []
+    for year in range(1, years + 1):
+        future_fcf = fcf * ((1 + growth_rate) ** year)
+        pv = future_fcf / ((1 + discount_rate) ** year)
+        cashflows.append(pv)
+    terminal_fcf = fcf * ((1 + growth_rate) ** years) * (1 + terminal_growth)
+    terminal_value = terminal_fcf / max(discount_rate - terminal_growth, 0.01)
+    terminal_pv = terminal_value / ((1 + discount_rate) ** years)
+    enterprise_value = sum(cashflows) + terminal_pv
+    if shares_outstanding and shares_outstanding > 0:
+        return enterprise_value / shares_outstanding
+    return enterprise_value
 
-    cols = ["Ticker", "Company", "Weight", "Price", "Forward P/E", "PEG", "Total Score /100", "Investment Rating"]
-    data = [cols]
-    for _, r in df[cols].fillna("N/A").iterrows():
-        data.append([str(r[c])[:28] for c in cols])
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0E1117")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,-1), 7),
-    ]))
-    story.append(table)
-    doc.build(story)
-    return output_path
+def peg_fair_pe(growth_rate):
+    if growth_rate is None or pd.isna(growth_rate):
+        return None
+    growth_pct = growth_rate * 100
+    return min(max(growth_pct, 10), 50)
+
+def valuation_signal(row):
+    val_score = row.get("Valuation Score /15")
+    if pd.isna(val_score): return "⚪ Unknown"
+    if val_score >= 13: return "🟢 Attractive"
+    if val_score >= 9: return "🟡 Fair"
+    if val_score >= 6: return "🟠 Expensive"
+    return "🔴 Very Expensive"

@@ -1,11 +1,23 @@
-# Luc Investment Terminal V2 Fixed
+# Luc Investment Terminal - Final Streamlit Version
 
-This version fixes the Streamlit Cloud deployment issue by forcing Python 3.11 and removing fragile pinned package versions.
-
-Upload these files to GitHub:
+## Files included
 - app.py
 - requirements.txt
 - runtime.txt
 - README.md
 
-Then redeploy on Streamlit Community Cloud.
+## Important deployment fix
+This version includes `runtime.txt` with:
+
+python-3.11
+
+This prevents Streamlit Cloud from using Python 3.14, which caused the Pillow/zlib build error.
+
+## Deploy on Streamlit Cloud
+Upload all files in this folder to your GitHub repository, then redeploy your Streamlit app.
+
+Your repository must contain:
+- app.py
+- requirements.txt
+- runtime.txt
+- README.md

@@ -123,36 +123,58 @@ def get_sp500_tickers():
         return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "JPM", "LLY"]
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def calculate_returns(tickers, period):
     results = []
 
     for ticker in tickers:
         try:
-            hist = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+            hist = yf.download(
+                ticker,
+                period=period,
+                auto_adjust=True,
+                progress=False,
+                threads=False
+            )
 
-            if hist.empty or "Close" not in hist.columns:
+            if hist is None or hist.empty or "Close" not in hist.columns:
                 continue
 
-            start_price = float(hist["Close"].dropna().iloc[0])
-            end_price = float(hist["Close"].dropna().iloc[-1])
+            close_prices = hist["Close"].dropna()
 
-            if start_price > 0:
-                return_pct = ((end_price - start_price) / start_price) * 100
-                info = stock_info(ticker)
+            if close_prices.empty or len(close_prices) < 2:
+                continue
 
-                results.append({
-                    "Ticker": ticker,
-                    "Company": info.get("shortName", ticker),
-                    "Return %": return_pct,
-                    "Start Price": start_price,
-                    "Current Price": end_price
-                })
+            start_price = float(close_prices.iloc[0])
+            current_price = float(close_prices.iloc[-1])
+
+            if start_price <= 0:
+                continue
+
+            return_pct = ((current_price - start_price) / start_price) * 100
+            info = stock_info(ticker)
+
+            results.append({
+                "Ticker": ticker,
+                "Company": info.get("shortName", ticker),
+                "Return %": return_pct,
+                "Start Price": start_price,
+                "Current Price": current_price
+            })
 
         except Exception:
             continue
 
-    return pd.DataFrame(results).sort_values("Return %", ascending=False)
+    columns = ["Rank", "Ticker", "Company", "Return %", "Start Price", "Current Price"]
+
+    if not results:
+        return pd.DataFrame(columns=columns)
+
+    df = pd.DataFrame(results)
+    df = df.sort_values("Return %", ascending=False).reset_index(drop=True)
+    df.insert(0, "Rank", df.index + 1)
+
+    return df
 
 
 def get_earnings_row(ticker):
@@ -296,18 +318,16 @@ elif page == "🏦 Fundamentals":
 
 
 elif page == "📰 News & Index Performers":
-    st.subheader("News & Top Index Performers")
+    st.subheader("📰 News & Top Index Performers")
 
-    index_choice = st.selectbox("Choose index", ["S&P 500", "Dow Jones"])
-    period_choice = st.selectbox(
-        "Performance period",
-        {
-            "3 months": "3mo",
-            "6 months": "6mo",
-            "9 months": "9mo",
-            "12 months": "1y",
-            "24 months": "2y"
-        }.keys()
+    index_choice = st.selectbox(
+        "Choose index",
+        ["S&P 500", "Dow Jones"]
+    )
+
+    period_label = st.selectbox(
+        "Choose performance period",
+        ["3 months", "6 months", "9 months", "12 months", "24 months"]
     )
 
     period_map = {
@@ -318,46 +338,71 @@ elif page == "📰 News & Index Performers":
         "24 months": "2y"
     }
 
-    top_n = st.slider("Number of top performers", 5, 25, 10)
+    top_n = st.selectbox(
+        "Number of top performers",
+        [10, 15, 20, 25],
+        index=0
+    )
 
     if index_choice == "S&P 500":
         index_tickers = get_sp500_tickers()
     else:
         index_tickers = DOW_TICKERS
 
-    st.info("Large index scans may take time on first load. Results are cached.")
+    st.info(
+        f"Scanning {index_choice} companies over the past {period_label}. "
+        "Stocks with missing Yahoo Finance data are skipped."
+    )
 
-    performers = calculate_returns(index_tickers, period_map[period_choice])
+    performers = calculate_returns(index_tickers, period_map[period_label])
 
-    if not performers.empty:
+    if performers.empty:
+        st.warning(
+            "Could not load performer data. Yahoo Finance may be unavailable or rate-limited."
+        )
+    else:
         top_performers = performers.head(top_n).copy()
+
         top_performers["Return %"] = top_performers["Return %"].apply(percent)
         top_performers["Start Price"] = top_performers["Start Price"].apply(money)
         top_performers["Current Price"] = top_performers["Current Price"].apply(money)
 
+        st.subheader(f"Top {top_n} {index_choice} performers — past {period_label}")
         st.dataframe(top_performers, use_container_width=True)
-    else:
-        st.warning("Could not load performer data.")
+
+        csv = top_performers.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download Top Performers CSV",
+            data=csv,
+            file_name=f"{index_choice.lower().replace(' ', '_')}_{period_label.replace(' ', '_')}_top_performers.csv",
+            mime="text/csv"
+        )
 
     st.divider()
+
     st.subheader("Portfolio News")
 
-    news_ticker = st.selectbox("Choose ticker for news", tickers if tickers else ["NVDA"])
-    news_items = stock_news(news_ticker)
+    if tickers:
+        news_ticker = st.selectbox("Choose ticker for news", tickers)
+        news_items = stock_news(news_ticker)
 
-    if news_items:
-        for item in news_items[:8]:
-            title = item.get("title", "No title")
-            publisher = item.get("publisher", "Unknown source")
-            link = item.get("link", "")
+        if news_items:
+            for item in news_items[:8]:
+                title = item.get("title", "No title")
+                publisher = item.get("publisher", "Unknown source")
+                link = item.get("link", "")
 
-            st.markdown(f"**{title}**")
-            st.caption(publisher)
-            if link:
-                st.link_button("Open article", link)
-            st.divider()
+                st.markdown(f"**{title}**")
+                st.caption(publisher)
+
+                if link:
+                    st.link_button("Open article", link)
+
+                st.divider()
+        else:
+            st.info("No news available for this ticker.")
     else:
-        st.info("No news available for this ticker.")
+        st.warning("Add tickers in the Portfolio page first.")
 
 
 elif page == "📊 Company Overview":

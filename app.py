@@ -1,189 +1,456 @@
-import streamlit as st
+import os
 import pandas as pd
+import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="Luc Investment Terminal", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Luc Investment Terminal V2", page_icon="📈", layout="wide")
 
-st.title("📈 Luc Investment Terminal")
-st.caption("Dynamic portfolio builder, live tickers, and fundamental analysis dashboard.")
+DATA_DIR = "data"
+PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.csv")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-default_portfolio = pd.DataFrame({
+DEFAULT_PORTFOLIO = pd.DataFrame({
     "Ticker": ["NVDA", "TSM", "AVGO", "MSFT", "AMD", "AMZN", "PLTR", "RKLB", "TEM", "CRWV", "QQQM"],
     "Company": ["NVIDIA", "TSMC", "Broadcom", "Microsoft", "AMD", "Amazon", "Palantir", "Rocket Lab", "Tempus AI", "CoreWeave", "Invesco NASDAQ 100 ETF"],
-    "Weight %": [22, 20, 13, 13, 10, 10, 5, 2.3, 2.3, 2.4, 0]
+    "Weight %": [22, 20, 13, 13, 10, 10, 5, 2.3, 2.3, 2.4, 0],
+    "Shares": [0.0] * 11,
+    "Average Cost": [0.0] * 11
 })
 
-if "portfolio" not in st.session_state:
-    st.session_state.portfolio = default_portfolio.copy()
+DOW_TICKERS = [
+    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+    "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT"
+]
+
+ACQUISITIONS = {
+    "NVDA": "Mellanox Technologies, Run:ai, Bright Computing.",
+    "MSFT": "LinkedIn, GitHub, Activision Blizzard, Nuance Communications.",
+    "AMZN": "Whole Foods, MGM Studios, Zoox, Ring, Twitch.",
+    "AVGO": "VMware, CA Technologies, Symantec Enterprise Security, Brocade.",
+    "AMD": "Xilinx, Pensando.",
+    "PLTR": "No major public acquisition history found in this app dataset.",
+    "TSM": "Mostly organic growth; no major acquisition-led strategy.",
+    "QQQM": "ETF, not a company."
+}
+
+
+def load_portfolio():
+    if os.path.exists(PORTFOLIO_FILE):
+        return pd.read_csv(PORTFOLIO_FILE)
+    DEFAULT_PORTFOLIO.to_csv(PORTFOLIO_FILE, index=False)
+    return DEFAULT_PORTFOLIO.copy()
+
+
+def save_portfolio(df):
+    df.to_csv(PORTFOLIO_FILE, index=False)
 
 
 def clean_portfolio(df):
     df = df.copy()
-    df = df.dropna(subset=["Ticker"])
-    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
+    required = ["Ticker", "Company", "Weight %", "Shares", "Average Cost"]
+    for col in required:
+        if col not in df.columns:
+            df[col] = 0 if col in ["Weight %", "Shares", "Average Cost"] else ""
+
+    df["Ticker"] = df["Ticker"].fillna("").astype(str).str.upper().str.strip()
     df["Company"] = df["Company"].fillna("").astype(str).str.strip()
-    df["Weight %"] = pd.to_numeric(df["Weight %"], errors="coerce").fillna(0)
-    df = df[df["Ticker"] != ""]
-    return df
+
+    for col in ["Weight %", "Shares", "Average Cost"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    return df[df["Ticker"] != ""]
 
 
 def money(x):
     try:
         return f"${float(x):,.2f}"
-    except:
+    except Exception:
         return "N/A"
 
 
-def money_big(x):
+def big_money(x):
     try:
         return f"${float(x):,.0f}"
-    except:
+    except Exception:
         return "N/A"
 
 
 def percent(x):
     try:
         return f"{float(x):.2f}%"
-    except:
+    except Exception:
         return "N/A"
 
 
 def number(x):
     try:
         return f"{float(x):.2f}"
-    except:
+    except Exception:
         return "N/A"
 
 
 @st.cache_data(ttl=300)
-def get_stock_info(ticker):
+def stock_info(ticker):
     try:
         return yf.Ticker(ticker).info
-    except:
+    except Exception:
         return {}
 
 
 @st.cache_data(ttl=300)
-def get_price_history(ticker, period):
+def stock_news(ticker):
     try:
-        return yf.download(ticker, period=period, progress=False, auto_adjust=True)
-    except:
+        return yf.Ticker(ticker).news
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=600)
+def stock_history(ticker, period="1y"):
+    try:
+        return yf.download(ticker, period=period, auto_adjust=True, progress=False)
+    except Exception:
         return pd.DataFrame()
 
 
-tab1, tab2, tab3 = st.tabs([
-    "💼 Portfolio Builder",
-    "📊 Live Tickers",
-    "🏦 Fundamental Analysis"
-])
+@st.cache_data(ttl=3600)
+def get_sp500_tickers():
+    try:
+        table = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+        return table["Symbol"].str.replace(".", "-", regex=False).tolist()
+    except Exception:
+        return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "JPM", "LLY"]
 
-with tab1:
-    st.subheader("💼 Portfolio Builder")
 
-    total_value = st.number_input("Total portfolio value ($)", min_value=0.0, value=1500.0, step=100.0)
+@st.cache_data(ttl=3600)
+def calculate_returns(tickers, period):
+    results = []
 
-    edited_df = st.data_editor(
+    for ticker in tickers:
+        try:
+            hist = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+
+            if hist.empty or "Close" not in hist.columns:
+                continue
+
+            start_price = float(hist["Close"].dropna().iloc[0])
+            end_price = float(hist["Close"].dropna().iloc[-1])
+
+            if start_price > 0:
+                return_pct = ((end_price - start_price) / start_price) * 100
+                info = stock_info(ticker)
+
+                results.append({
+                    "Ticker": ticker,
+                    "Company": info.get("shortName", ticker),
+                    "Return %": return_pct,
+                    "Start Price": start_price,
+                    "Current Price": end_price
+                })
+
+        except Exception:
+            continue
+
+    return pd.DataFrame(results).sort_values("Return %", ascending=False)
+
+
+def get_earnings_row(ticker):
+    info = stock_info(ticker)
+
+    return {
+        "Ticker": ticker,
+        "Company": info.get("shortName", ticker),
+        "Upcoming Earnings Date": info.get("earningsDate", "N/A"),
+        "Previous EPS": number(info.get("trailingEps")),
+        "Estimated EPS": number(info.get("forwardEps")),
+        "EPS Surprise %": "N/A",
+        "Revenue Estimate": big_money(info.get("revenuePerShare")) if info.get("revenuePerShare") else "N/A"
+    }
+
+
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = load_portfolio()
+
+st.sidebar.title("📈 Luc Terminal V2")
+
+page = st.sidebar.radio(
+    "Navigation",
+    [
+        "🏠 Dashboard",
+        "💼 Portfolio",
+        "📊 Live Market",
+        "🏦 Fundamentals",
+        "📰 News & Index Performers",
+        "📊 Company Overview",
+        "📅 Earnings Calendar",
+        "📈 Simulator",
+        "⚙️ Settings"
+    ]
+)
+
+portfolio = clean_portfolio(st.session_state.portfolio)
+tickers = portfolio["Ticker"].tolist()
+
+st.title("📈 Luc Investment Terminal V2")
+
+if page == "🏠 Dashboard":
+    st.subheader("Portfolio Dashboard")
+
+    total_value = st.number_input("Portfolio value ($)", min_value=0.0, value=1500.0, step=100.0)
+    portfolio["Dollar Amount"] = portfolio["Weight %"] / 100 * total_value
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Portfolio Value", money(total_value))
+    c2.metric("Assets", len(portfolio))
+    c3.metric("Total Weight", percent(portfolio["Weight %"].sum()))
+    c4.metric("Unallocated", percent(100 - portfolio["Weight %"].sum()))
+
+    st.dataframe(portfolio, use_container_width=True)
+
+    if not portfolio.empty:
+        st.bar_chart(portfolio.set_index("Ticker")["Dollar Amount"])
+
+
+elif page == "💼 Portfolio":
+    st.subheader("Portfolio Builder")
+
+    edited = st.data_editor(
         st.session_state.portfolio,
         num_rows="dynamic",
         use_container_width=True,
         key="portfolio_editor"
     )
 
-    edited_df = clean_portfolio(edited_df)
-    st.session_state.portfolio = edited_df
+    edited = clean_portfolio(edited)
+    st.session_state.portfolio = edited
+    save_portfolio(edited)
 
-    edited_df["Dollar Amount"] = edited_df["Weight %"] / 100 * total_value
-    total_weight = edited_df["Weight %"].sum()
+    st.success("Portfolio saved automatically.")
+    st.dataframe(edited, use_container_width=True)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Portfolio Value", money(total_value))
-    col2.metric("Total Weight", percent(total_weight))
-    col3.metric("Number of Assets", len(edited_df))
+    csv = edited.to_csv(index=False).encode("utf-8")
+    st.download_button("Download Portfolio CSV", csv, "portfolio.csv", "text/csv")
 
-    if round(total_weight, 2) != 100:
-        st.warning(f"Your portfolio weight is {total_weight:.2f}%. It should equal 100%.")
+
+elif page == "📊 Live Market":
+    st.subheader("Live Market")
+
+    rows = []
+
+    for ticker in tickers:
+        info = stock_info(ticker)
+        price = info.get("regularMarketPrice")
+        previous = info.get("previousClose")
+
+        change = None
+        if price is not None and previous not in [None, 0]:
+            change = ((price - previous) / previous) * 100
+
+        rows.append({
+            "Ticker": ticker,
+            "Company": info.get("shortName", ticker),
+            "Price": money(price),
+            "Previous Close": money(previous),
+            "Daily Change": percent(change),
+            "Market Cap": big_money(info.get("marketCap"))
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    if tickers:
+        selected = st.selectbox("Select ticker", tickers)
+        period = st.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "5y"], index=3)
+        hist = stock_history(selected, period)
+
+        if not hist.empty and "Close" in hist.columns:
+            st.line_chart(hist["Close"])
+
+
+elif page == "🏦 Fundamentals":
+    st.subheader("Fundamental Analysis")
+
+    rows = []
+
+    for ticker in tickers:
+        info = stock_info(ticker)
+
+        rows.append({
+            "Ticker": ticker,
+            "Company": info.get("shortName", ticker),
+            "Market Cap": big_money(info.get("marketCap")),
+            "Revenue Growth": percent(info.get("revenueGrowth") * 100 if info.get("revenueGrowth") is not None else None),
+            "Earnings Growth": percent(info.get("earningsGrowth") * 100 if info.get("earningsGrowth") is not None else None),
+            "Profit Margin": percent(info.get("profitMargins") * 100 if info.get("profitMargins") is not None else None),
+            "Gross Margin": percent(info.get("grossMargins") * 100 if info.get("grossMargins") is not None else None),
+            "Debt / Equity": number(info.get("debtToEquity")),
+            "Forward P/E": number(info.get("forwardPE")),
+            "Trailing P/E": number(info.get("trailingPE")),
+            "Price / Sales": number(info.get("priceToSalesTrailing12Months")),
+            "ROE": percent(info.get("returnOnEquity") * 100 if info.get("returnOnEquity") is not None else None),
+            "Free Cash Flow": big_money(info.get("freeCashflow")),
+            "Total Revenue": big_money(info.get("totalRevenue"))
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+
+elif page == "📰 News & Index Performers":
+    st.subheader("News & Top Index Performers")
+
+    index_choice = st.selectbox("Choose index", ["S&P 500", "Dow Jones"])
+    period_choice = st.selectbox(
+        "Performance period",
+        {
+            "3 months": "3mo",
+            "6 months": "6mo",
+            "9 months": "9mo",
+            "12 months": "1y",
+            "24 months": "2y"
+        }.keys()
+    )
+
+    period_map = {
+        "3 months": "3mo",
+        "6 months": "6mo",
+        "9 months": "9mo",
+        "12 months": "1y",
+        "24 months": "2y"
+    }
+
+    top_n = st.slider("Number of top performers", 5, 25, 10)
+
+    if index_choice == "S&P 500":
+        index_tickers = get_sp500_tickers()
     else:
-        st.success("Portfolio weights total 100%.")
+        index_tickers = DOW_TICKERS
 
-    display_portfolio = edited_df.copy()
-    display_portfolio["Weight %"] = display_portfolio["Weight %"].apply(percent)
-    display_portfolio["Dollar Amount"] = display_portfolio["Dollar Amount"].apply(money)
+    st.info("Large index scans may take time on first load. Results are cached.")
 
-    st.dataframe(display_portfolio, use_container_width=True)
+    performers = calculate_returns(index_tickers, period_map[period_choice])
 
-    if not edited_df.empty:
-        st.bar_chart(edited_df.set_index("Ticker")["Dollar Amount"])
+    if not performers.empty:
+        top_performers = performers.head(top_n).copy()
+        top_performers["Return %"] = top_performers["Return %"].apply(percent)
+        top_performers["Start Price"] = top_performers["Start Price"].apply(money)
+        top_performers["Current Price"] = top_performers["Current Price"].apply(money)
 
-with tab2:
-    st.subheader("📊 Live Tickers")
+        st.dataframe(top_performers, use_container_width=True)
+    else:
+        st.warning("Could not load performer data.")
 
-    portfolio_df = clean_portfolio(st.session_state.portfolio)
-    tickers = portfolio_df["Ticker"].tolist()
+    st.divider()
+    st.subheader("Portfolio News")
+
+    news_ticker = st.selectbox("Choose ticker for news", tickers if tickers else ["NVDA"])
+    news_items = stock_news(news_ticker)
+
+    if news_items:
+        for item in news_items[:8]:
+            title = item.get("title", "No title")
+            publisher = item.get("publisher", "Unknown source")
+            link = item.get("link", "")
+
+            st.markdown(f"**{title}**")
+            st.caption(publisher)
+            if link:
+                st.link_button("Open article", link)
+            st.divider()
+    else:
+        st.info("No news available for this ticker.")
+
+
+elif page == "📊 Company Overview":
+    st.subheader("Company Overview")
 
     if not tickers:
-        st.warning("Add at least one ticker in Portfolio Builder.")
+        st.warning("Add tickers in the Portfolio page first.")
     else:
-        live_data = []
+        selected = st.selectbox("Click / choose a ticker", tickers)
+        info = stock_info(selected)
 
-        for ticker in tickers:
-            info = get_stock_info(ticker)
-            price = info.get("regularMarketPrice")
-            previous_close = info.get("previousClose")
+        st.header(info.get("shortName", selected))
 
-            daily_change = None
-            if price is not None and previous_close not in [None, 0]:
-                daily_change = ((price - previous_close) / previous_close) * 100
+        st.write(info.get("longBusinessSummary", "No company description available."))
 
-            live_data.append({
-                "Ticker": ticker,
-                "Company": info.get("shortName", ticker),
-                "Price": money(price),
-                "Previous Close": money(previous_close),
-                "Daily Change %": percent(daily_change),
-                "Market Cap": money_big(info.get("marketCap"))
-            })
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Industry", info.get("industry", "N/A"))
+        c2.metric("Sector", info.get("sector", "N/A"))
+        c3.metric("Country", info.get("country", "N/A"))
 
-        st.dataframe(pd.DataFrame(live_data), use_container_width=True)
+        overview = {
+            "Ticker": selected,
+            "Company": info.get("shortName", selected),
+            "Industry": info.get("industry", "N/A"),
+            "Previous Acquisitions": ACQUISITIONS.get(selected, "Not available in Yahoo Finance. Add manually later."),
+            "52-Week High": money(info.get("fiftyTwoWeekHigh")),
+            "52-Week Low": money(info.get("fiftyTwoWeekLow")),
+            "Dividend Rate": money(info.get("dividendRate")),
+            "Dividend Yield": percent(info.get("dividendYield") * 100 if info.get("dividendYield") else None),
+            "Payout Ratio": percent(info.get("payoutRatio") * 100 if info.get("payoutRatio") else None),
+            "Institutional Ownership": percent(info.get("heldPercentInstitutions") * 100 if info.get("heldPercentInstitutions") else None),
+            "Insider Ownership": percent(info.get("heldPercentInsiders") * 100 if info.get("heldPercentInsiders") else None),
+            "Website": info.get("website", "N/A")
+        }
 
-        selected_ticker = st.selectbox("Choose ticker for chart", tickers)
-        period = st.selectbox("Chart period", ["1mo", "3mo", "6mo", "1y", "5y"], index=3)
+        st.dataframe(pd.DataFrame(overview.items(), columns=["Metric", "Value"]), use_container_width=True)
 
-        price_history = get_price_history(selected_ticker, period)
 
-        if not price_history.empty and "Close" in price_history.columns:
-            st.line_chart(price_history["Close"])
-        else:
-            st.info("No chart data available.")
+elif page == "📅 Earnings Calendar":
+    st.subheader("Earnings Calendar")
 
-with tab3:
-    st.subheader("🏦 Fundamental Analysis")
+    earnings_rows = []
 
-    portfolio_df = clean_portfolio(st.session_state.portfolio)
-    tickers = portfolio_df["Ticker"].tolist()
+    for ticker in tickers:
+        earnings_rows.append(get_earnings_row(ticker))
 
-    if not tickers:
-        st.warning("Add at least one ticker in Portfolio Builder.")
+    if earnings_rows:
+        st.dataframe(pd.DataFrame(earnings_rows), use_container_width=True)
     else:
-        fundamentals_data = []
+        st.warning("No portfolio tickers found.")
 
-        for ticker in tickers:
-            info = get_stock_info(ticker)
+    st.caption("Some earnings fields may show N/A because free Yahoo Finance data is incomplete for certain tickers.")
 
-            fundamentals_data.append({
-                "Ticker": ticker,
-                "Company": info.get("shortName", ticker),
-                "Market Cap": money_big(info.get("marketCap")),
-                "Revenue Growth %": percent(info.get("revenueGrowth") * 100 if info.get("revenueGrowth") is not None else None),
-                "Earnings Growth %": percent(info.get("earningsGrowth") * 100 if info.get("earningsGrowth") is not None else None),
-                "Profit Margin %": percent(info.get("profitMargins") * 100 if info.get("profitMargins") is not None else None),
-                "Debt / Equity": number(info.get("debtToEquity")),
-                "Forward P/E": number(info.get("forwardPE")),
-                "Trailing P/E": number(info.get("trailingPE")),
-                "Price / Sales": number(info.get("priceToSalesTrailing12Months")),
-                "Return on Equity %": percent(info.get("returnOnEquity") * 100 if info.get("returnOnEquity") is not None else None),
-                "Free Cash Flow": money_big(info.get("freeCashflow")),
-                "Total Revenue": money_big(info.get("totalRevenue")),
-                "Gross Margin %": percent(info.get("grossMargins") * 100 if info.get("grossMargins") is not None else None)
-            })
 
-        st.dataframe(pd.DataFrame(fundamentals_data), use_container_width=True)
+elif page == "📈 Simulator":
+    st.subheader("Portfolio Growth Simulator")
+
+    initial = st.number_input("Initial investment ($)", min_value=0.0, value=1500.0, step=100.0)
+    monthly = st.number_input("Monthly contribution ($)", min_value=0.0, value=100.0, step=50.0)
+    annual_return = st.number_input("Expected annual return (%)", min_value=0.0, value=10.0, step=0.5)
+    years = st.slider("Years", 1, 40, 10)
+
+    monthly_return = (1 + annual_return / 100) ** (1 / 12) - 1
+    balance = initial
+    records = []
+
+    for year in range(1, years + 1):
+        for month in range(12):
+            balance = balance * (1 + monthly_return) + monthly
+        records.append({"Year": year, "Projected Value": balance})
+
+    sim_df = pd.DataFrame(records)
+
+    st.metric("Projected Final Value", money(balance))
+    st.line_chart(sim_df.set_index("Year")["Projected Value"])
+    st.dataframe(sim_df, use_container_width=True)
+
+
+elif page == "⚙️ Settings":
+    st.subheader("Settings")
+
+    st.code(PORTFOLIO_FILE)
+
+    if st.button("Reset portfolio to default"):
+        st.session_state.portfolio = DEFAULT_PORTFOLIO.copy()
+        save_portfolio(DEFAULT_PORTFOLIO)
+        st.success("Portfolio reset successfully. Refresh the page.")
+
+    uploaded = st.file_uploader("Import portfolio CSV", type=["csv"])
+
+    if uploaded is not None:
+        imported = pd.read_csv(uploaded)
+        imported = clean_portfolio(imported)
+        st.session_state.portfolio = imported
+        save_portfolio(imported)
+        st.success("Imported and saved successfully.")

@@ -1,18 +1,6 @@
-import streamlit as st
-import pandas as pd
-from src.data_fetcher import fetch_stock_data
-from src.models.scoring import add_scores
-from src.models.reporting import create_pdf_report
-
-st.title("📄 PDF Reports")
-
-portfolio = pd.read_csv("src/data/portfolio.csv")
-data = fetch_stock_data(portfolio["Ticker"].tolist())
-df = add_scores(portfolio.merge(data, on="Ticker", how="left", suffixes=("", "_Live")))
-
-if st.button("Generate PDF Report"):
-    path = create_pdf_report(df, "luc_investment_report.pdf")
-    with open(path, "rb") as f:
-        st.download_button("Download PDF", f, file_name="luc_investment_report.pdf", mime="application/pdf")
-else:
-    st.info("Click the button to generate a portfolio report.")
+[theme]
+base="dark"
+primaryColor="#00C2FF"
+backgroundColor="#0E1117"
+secondaryBackgroundColor="#161B22"
+textColor="#F5F7FA"

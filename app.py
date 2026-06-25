@@ -1,3 +1,8 @@
+import streamlit as st
+
+st.set_page_config(page_title="Luc Investment Terminal", layout="wide")
+st.title("Luc Investment Terminal")
+st.write("App loaded successfully.")
 import pandas as pd
 import math
 

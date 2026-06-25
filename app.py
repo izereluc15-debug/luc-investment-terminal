@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 st.title("📈 Luc Investment Terminal")
-st.caption("Portfolio builder, live tickers, and fundamental analysis dashboard.")
+st.caption("Dynamic portfolio builder, live tickers, and fundamental analysis dashboard.")
 
 default_portfolio = pd.DataFrame({
     "Ticker": ["NVDA", "TSM", "AVGO", "MSFT", "AMD", "AMZN", "PLTR", "RKLB", "TEM", "CRWV", "QQQM"],
@@ -32,6 +32,34 @@ default_portfolio = pd.DataFrame({
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = default_portfolio.copy()
 
+
+def clean_portfolio(df):
+    df = df.copy()
+    df = df.dropna(subset=["Ticker"])
+    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
+    df["Company"] = df["Company"].fillna("").astype(str).str.strip()
+    df["Weight %"] = pd.to_numeric(df["Weight %"], errors="coerce").fillna(0)
+    df = df[df["Ticker"] != ""]
+    return df
+
+
+@st.cache_data(ttl=300)
+def get_stock_info(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        return stock.info
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300)
+def get_price_history(ticker, period):
+    try:
+        return yf.download(ticker, period=period, progress=False)
+    except Exception:
+        return pd.DataFrame()
+
+
 tab1, tab2, tab3 = st.tabs([
     "💼 Portfolio Builder",
     "📊 Live Tickers",
@@ -48,12 +76,13 @@ with tab1:
         step=100.0
     )
 
-    st.write("Add, edit, or remove assets directly in the table.")
+    st.write("Add, edit, or remove assets below. Other tabs will update automatically.")
 
     edited_df = st.data_editor(
         st.session_state.portfolio,
         num_rows="dynamic",
         use_container_width=True,
+        key="portfolio_editor",
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker Symbol"),
             "Company": st.column_config.TextColumn("Company Name"),
@@ -66,13 +95,13 @@ with tab1:
         }
     )
 
+    edited_df = clean_portfolio(edited_df)
     st.session_state.portfolio = edited_df
 
     edited_df["Dollar Amount"] = edited_df["Weight %"] / 100 * total_value
     total_weight = edited_df["Weight %"].sum()
 
     col1, col2, col3 = st.columns(3)
-
     col1.metric("Total Portfolio Value", f"${total_value:,.2f}")
     col2.metric("Total Weight", f"{total_weight:.2f}%")
     col3.metric("Number of Assets", len(edited_df))
@@ -92,11 +121,9 @@ with tab1:
         use_container_width=True
     )
 
-    st.subheader("Allocation Chart")
-
     if not edited_df.empty:
-        chart_df = edited_df.set_index("Ticker")["Dollar Amount"]
-        st.bar_chart(chart_df)
+        st.subheader("Allocation Chart")
+        st.bar_chart(edited_df.set_index("Ticker")["Dollar Amount"])
 
     csv = edited_df.to_csv(index=False).encode("utf-8")
 
@@ -110,19 +137,16 @@ with tab1:
 with tab2:
     st.subheader("📊 Live Tickers")
 
-    tickers_input = st.text_input(
-        "Enter ticker symbols separated by commas",
-        value="NVDA,MSFT,TSM,AVGO,AMD,AMZN,PLTR,QQQM"
-    )
+    portfolio_df = clean_portfolio(st.session_state.portfolio)
+    tickers = portfolio_df["Ticker"].tolist()
 
-    tickers = [ticker.strip().upper() for ticker in tickers_input.split(",") if ticker.strip()]
+    if not tickers:
+        st.warning("Add at least one ticker in the Portfolio Builder tab.")
+    else:
+        live_data = []
 
-    live_data = []
-
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+        for ticker in tickers:
+            info = get_stock_info(ticker)
 
             price = info.get("regularMarketPrice")
             previous_close = info.get("previousClose")
@@ -140,30 +164,19 @@ with tab2:
                 "Market Cap": info.get("marketCap")
             })
 
-        except Exception:
-            live_data.append({
-                "Ticker": ticker,
-                "Company": "Data unavailable",
-                "Price": None,
-                "Previous Close": None,
-                "Daily Change %": None,
-                "Market Cap": None
-            })
+        live_df = pd.DataFrame(live_data)
 
-    live_df = pd.DataFrame(live_data)
+        st.dataframe(
+            live_df.style.format({
+                "Price": "${:,.2f}",
+                "Previous Close": "${:,.2f}",
+                "Daily Change %": "{:.2f}%",
+                "Market Cap": "${:,.0f}"
+            }),
+            use_container_width=True
+        )
 
-    st.dataframe(
-        live_df.style.format({
-            "Price": "${:,.2f}",
-            "Previous Close": "${:,.2f}",
-            "Daily Change %": "{:.2f}%",
-            "Market Cap": "${:,.0f}"
-        }),
-        use_container_width=True
-    )
-
-    if tickers:
-        selected_ticker = st.selectbox("Choose ticker for price chart", tickers)
+        selected_ticker = st.selectbox("Choose ticker for chart", tickers)
 
         period = st.selectbox(
             "Chart period",
@@ -171,42 +184,32 @@ with tab2:
             index=3
         )
 
-        try:
-            price_history = yf.download(selected_ticker, period=period, progress=False)
+        price_history = get_price_history(selected_ticker, period)
 
-            if not price_history.empty:
-                st.line_chart(price_history["Close"])
-            else:
-                st.info("No chart data available.")
-
-        except Exception:
-            st.error("Could not load chart data.")
+        if not price_history.empty:
+            st.line_chart(price_history["Close"])
+        else:
+            st.info("No chart data available.")
 
 with tab3:
     st.subheader("🏦 Fundamental Analysis")
 
-    fundamentals_input = st.text_input(
-        "Enter ticker symbols for fundamentals",
-        value="NVDA,MSFT,TSM,AVGO,AMD,AMZN,PLTR,QQQM"
-    )
+    portfolio_df = clean_portfolio(st.session_state.portfolio)
+    tickers = portfolio_df["Ticker"].tolist()
 
-    fundamental_tickers = [
-        ticker.strip().upper()
-        for ticker in fundamentals_input.split(",")
-        if ticker.strip()
-    ]
+    if not tickers:
+        st.warning("Add at least one ticker in the Portfolio Builder tab.")
+    else:
+        fundamentals_data = []
 
-    fundamentals_data = []
-
-    for ticker in fundamental_tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+        for ticker in tickers:
+            info = get_stock_info(ticker)
 
             revenue_growth = info.get("revenueGrowth")
             earnings_growth = info.get("earningsGrowth")
             profit_margin = info.get("profitMargins")
             return_on_equity = info.get("returnOnEquity")
+            gross_margin = info.get("grossMargins")
 
             fundamentals_data.append({
                 "Ticker": ticker,
@@ -222,43 +225,25 @@ with tab3:
                 "Return on Equity %": return_on_equity * 100 if return_on_equity is not None else None,
                 "Free Cash Flow": info.get("freeCashflow"),
                 "Total Revenue": info.get("totalRevenue"),
-                "Gross Margins %": info.get("grossMargins") * 100 if info.get("grossMargins") is not None else None
+                "Gross Margin %": gross_margin * 100 if gross_margin is not None else None
             })
 
-        except Exception:
-            fundamentals_data.append({
-                "Ticker": ticker,
-                "Company": "Data unavailable",
-                "Market Cap": None,
-                "Revenue Growth %": None,
-                "Earnings Growth %": None,
-                "Profit Margin %": None,
-                "Debt / Equity": None,
-                "Forward P/E": None,
-                "Trailing P/E": None,
-                "Price / Sales": None,
-                "Return on Equity %": None,
-                "Free Cash Flow": None,
-                "Total Revenue": None,
-                "Gross Margins %": None
-            })
+        fundamentals_df = pd.DataFrame(fundamentals_data)
 
-    fundamentals_df = pd.DataFrame(fundamentals_data)
-
-    st.dataframe(
-        fundamentals_df.style.format({
-            "Market Cap": "${:,.0f}",
-            "Revenue Growth %": "{:.2f}%",
-            "Earnings Growth %": "{:.2f}%",
-            "Profit Margin %": "{:.2f}%",
-            "Debt / Equity": "{:.2f}",
-            "Forward P/E": "{:.2f}",
-            "Trailing P/E": "{:.2f}",
-            "Price / Sales": "{:.2f}",
-            "Return on Equity %": "{:.2f}%",
-            "Free Cash Flow": "${:,.0f}",
-            "Total Revenue": "${:,.0f}",
-            "Gross Margins %": "{:.2f}%"
-        }),
-        use_container_width=True
-    )
+        st.dataframe(
+            fundamentals_df.style.format({
+                "Market Cap": "${:,.0f}",
+                "Revenue Growth %": "{:.2f}%",
+                "Earnings Growth %": "{:.2f}%",
+                "Profit Margin %": "{:.2f}%",
+                "Debt / Equity": "{:.2f}",
+                "Forward P/E": "{:.2f}",
+                "Trailing P/E": "{:.2f}",
+                "Price / Sales": "{:.2f}",
+                "Return on Equity %": "{:.2f}%",
+                "Free Cash Flow": "${:,.0f}",
+                "Total Revenue": "${:,.0f}",
+                "Gross Margin %": "{:.2f}%"
+            }),
+            use_container_width=True
+        )
